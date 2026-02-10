@@ -888,7 +888,7 @@ class ELN2Crate:
                 # now, add the protocol sections as parts to the main protocol node
                 protocol_id = self.id_generator.getProtocol()
                 self.graph.add((protocol_id, RDF.type, URIRef('Action')))
-                self.graph.add((protocol_id, RDF.type, URIRef('bfo:process')))
+                self.graph.add((protocol_id, RDF.type, URIRef('http://purl.obolibrary.org/obo/BFO_0000015')))
                 self.graph.add((protocol_id, RDF.type, URIRef('prov:Activity')))
                 self.graph.add((
                     protocol_id,
@@ -1028,7 +1028,7 @@ class ELN2Crate:
             description_wo_links = description_wo_links.text.strip()
             description_low = row.contents[1].text.strip().lower()
             self.graph.add((step_id, RDF.type, URIRef('Action')))
-            self.graph.add((step_id, RDF.type, URIRef('bfo:process')))
+            self.graph.add((step_id, RDF.type, URIRef('http://purl.obolibrary.org/obo/BFO_0000015')))
             self.graph.add((step_id, RDF.type, URIRef('prov:Activity')))
             act_found = 0
             for indicator, ontology_class in activities.items():
