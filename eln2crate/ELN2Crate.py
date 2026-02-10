@@ -335,7 +335,7 @@ class ELN2Crate:
                     if content == 'ontology-item':
                         self.graph.add((
                             graph_item,
-                            OWL.sameAs,
+                            RDF.type,
                             URIRef(row.contents[3].text.strip())
                         ))
                         assigned = True
@@ -1033,7 +1033,7 @@ class ELN2Crate:
             act_found = 0
             for indicator, ontology_class in activities.items():
                 if indicator in description_low:
-                    self.graph.add((step_id, OWL.sameAs, URIRef(ontology_class)))
+                    self.graph.add((step_id, RDF.type, URIRef(ontology_class)))
                     act_found += 1
             if act_found == 0:
                 self.log.error(
