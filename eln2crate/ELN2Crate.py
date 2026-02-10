@@ -44,7 +44,7 @@ class ELN2Crate:
             'https://w3id.org/ro/crate/1.1/context',
             {
                 #'@base': self.protocol_namespace,
-                #'@vocab': 'https://schema.org/',
+                #'@vocab': 'http://schema.org/',
                 'foaf': FOAF,
                 'xsd': XSD,
                 'rdfs': 'http://www.w3.org/2000/01/rdf-schema#', # NOTE: using RDFS here throws some error
@@ -188,7 +188,7 @@ class ELN2Crate:
                     lastchange = datetime.strptime(data['scandate'], '%Y-%m-%dT%H:%M:%SZ')
                     self.graph.add((
                         graph_id,
-                        URIRef('https://schema.org/dateModified'),
+                        URIRef('http://schema.org/dateModified'),
                         Literal(lastchange, datatype=XSD.dateTime)
                     ))
                     # the following information will be skipped for now
@@ -210,7 +210,7 @@ class ELN2Crate:
                         lastchange = datetime.strptime(upload['datetime'], '%Y-%m-%d %H:%M:%S')
                         self.graph.add((
                             graph_id,
-                            URIRef('https://schema.org/dateModified'),
+                            URIRef('http://schema.org/dateModified'),
                             Literal(lastchange, datatype=XSD.dateTime)
                         ))
                         # Disable this as it allows anybody to download the file
@@ -235,7 +235,7 @@ class ELN2Crate:
             #     lastchange = datetime.strptime(self.exp['lastchange'], '%Y-%m-%d %H:%M:%S')
             #     self.graph.add((
             #         graph_id,
-            #         URIRef('https://schema.org/dateModified'),
+            #         URIRef('http://schema.org/dateModified'),
             #         Literal(lastchange, datatype=XSD.dateTime)
             #     ))
             #     experiment_url = '%s/experiments.php?mode=view&id=%s' % (
@@ -256,7 +256,7 @@ class ELN2Crate:
             #             lastchange = datetime.strptime(item['lastchange'], '%Y-%m-%d %H:%M:%S')
             #             self.graph.add((
             #                 graph_id,
-            #                 URIRef('https://schema.org/dateModified'),
+            #                 URIRef('http://schema.org/dateModified'),
             #                 Literal(lastchange, datatype=XSD.dateTime)
             #             ))
             #             database_url = '%s/database.php?mode=view&id=%s' % (
@@ -306,7 +306,7 @@ class ELN2Crate:
             lastchange = datetime.strptime(item['lastchange'], '%Y-%m-%d %H:%M:%S')
             self.graph.add((
                 graph_item,
-                URIRef('https://schema.org/dateModified'),
+                URIRef('http://schema.org/dateModified'),
                 Literal(lastchange, datatype=XSD.dateTime)
             ))
             # disable the database url for now
