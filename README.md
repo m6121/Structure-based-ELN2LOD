@@ -23,12 +23,19 @@ In order to reference this software, please consider the information in the [CIT
 
 ## Usage
 
+### Software Requirements
+
+Note that in order to integrate the signature-based file format output of [siegfried](https://github.com/richardlehane/siegfried), [docker](https://www.docker.com/) must be installed and must be able to be invoked by the user executing the python commands.
+
+### Running
+
 In order to run the source code, install the python dependencies from `requirements.txt` and make sure that [Docker](https://www.docker.com/) is installed and running.
+To disable the use of siegfried, put `None` when initializing `ELN2Crate` in the parameter `SIEGFRIED_IMAGE` (see below).
 
 A minimum running example is as follows:
 
 ```python3
-model = ELN2Crate(LOGGER, NAMESPACE_URL, ELABFTW_URL, ELABFTW_MANAGER, EXP_ID, PSEUDONYMIZE_PERSONS)
+model = ELN2Crate(LOGGER, NAMESPACE_URL, ELABFTW_URL, ELABFTW_MANAGER, EXP_ID, PSEUDONYMIZE_PERSONS, SIEGFRIED_IMAGE)
 
 try:
     model.write_files()
@@ -46,3 +53,4 @@ where the following variables have been set:
 * `ELABFTW_MANAGER` an initialized version of the `elabapy.Manager()` with read permissions on the experiment and the corresponding inventory items
 * `EXP_ID` the experiment ID that should be bundled
 * `PSEUDONYMIZE_PERSONS` is an array of strings that should be replaced by pseudonymized before bundling in order to protect privacy.
+* *Optional* `SIEGFRIED_IMAGE` is a string with the docker image to be used to invoke [siegfried](https://github.com/richardlehane/siegfried) for the file format identification. In order to disable the integration of the siegfried output, use `None`. By default the following image is used: `'sfbelaine/common:siegfried_latest'`

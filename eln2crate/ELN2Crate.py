@@ -31,10 +31,11 @@ class ProtocolElementUnknown(Exception):
     pass
 
 class ELN2Crate:
-    def __init__(self, logger, namespace_url, elabftw_url, elabftw_client, exp_id, pseudonymize_persons):
+    def __init__(self, logger, namespace_url, elabftw_url, elabftw_client, exp_id, pseudonymize_persons, siegfried_image='sfbelaine/common:siegfried_latest'):
         self.log = logger
         self.elabftw_url = elabftw_url
         self.elabftw_client = elabftw_client
+        self.siegfried_image = siegfried_image
 
         self.items_client = elabapi_python.ItemsApi(self.elabftw_client)
         self.experiments_client = elabapi_python.ExperimentsApi(self.elabftw_client)
@@ -165,33 +166,35 @@ class ELN2Crate:
                 'category': tmp_item.category_title,
             })
 
-    def _call_siegfried(self): # FIXME: disables for now
-        # folder_path = os.path.abspath(self.tempfolder)
-        # result = subprocess.run(' '.join([
-        #     '/usr/bin/docker',
-        #     'run',
-        #     '--rm',
-        #     '-v',
-        #     '%s:%s' % (folder_path, folder_path),
-        #     '--user',
-        #     '$(id -u)',
-        #     'sfbelaine/common:siegfried_latest',
-        #     'sf',
-        #     '-sourceinline',
-        #     '-json',
-        #     '-hash',
-        #     'sha512',
-        #     '-utc',
-        #     '-z',
-        #     folder_path
-        # ]), capture_output=True, shell=True, check=True)
+    def _call_siegfried(self):
+        if not self.siegfried_image:
+            return None
 
-        # jsonfile_name = os.path.join(self.tempfolder, 'siegfried_output.json')
-        # with open(jsonfile_name, 'wb') as jsonfile:
-        #     jsonfile.write(result.stdout)
+        folder_path = os.path.abspath(self.tempfolder)
+        result = subprocess.run(' '.join([
+            '/usr/bin/docker',
+            'run',
+            '--rm',
+            '-v',
+            '%s:%s' % (folder_path, folder_path),
+            '--user',
+            '$(id -u)',
+            self.siegfried_image,
+            'sf',
+            '-sourceinline',
+            '-json',
+            '-hash',
+            'sha512',
+            '-utc',
+            '-z',
+            folder_path
+        ]), capture_output=True, shell=True, check=True)
 
-        # return jsonfile_name
-        return ''
+        jsonfile_name = os.path.join(self.tempfolder, 'siegfried_output.json')
+        with open(jsonfile_name, 'wb') as jsonfile:
+            jsonfile.write(result.stdout)
+
+        return jsonfile_name
 
     def create_model(self):
         self.sf_output = self._call_siegfried()
@@ -316,7 +319,7 @@ class ELN2Crate:
             ###################################################################
 
             # check if we find corresponding match from siegefried outout
-            if os.path.isfile(self.sf_output):
+            if self.sf_output and os.path.isfile(self.sf_output):
                 self.log.debug('Output from siegfried found under "%s"' % (self.sf_output))
                 with open(self.sf_output) as data_file:
                     data = json.load(data_file)
