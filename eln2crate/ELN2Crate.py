@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 
+import elabapi_python
+
 from datetime import datetime
 from pathlib import Path
 from urllib import parse
@@ -29,50 +31,73 @@ class ProtocolElementUnknown(Exception):
     pass
 
 class ELN2Crate:
-    def __init__(self, logger, namespace_url, elabftw_url, elabftw_manager, exp_id, pseudonymize_persons):
+    def __init__(self, logger, namespace_url, elabftw_url, elabftw_client, exp_id, pseudonymize_persons):
         self.log = logger
         self.elabftw_url = elabftw_url
-        self.elabftw_manager = elabftw_manager
+        self.elabftw_client = elabftw_client
+
+        self.items_client = elabapi_python.ItemsApi(self.elabftw_client)
+        self.experiments_client = elabapi_python.ExperimentsApi(self.elabftw_client)
+        self.uploads_client = elabapi_python.UploadsApi(self.elabftw_client)
+        self.exp_items_links_client = elabapi_python.LinksToItemsApi(self.elabftw_client)
+
         self.tempfolder = tempfile.mkdtemp()
         self.pseudonymize_persons = pseudonymize_persons
         self._get_experiment_information(exp_id)
         self.general_namespace = Namespace(namespace_url + '/')
         self.protocol_namespace = Namespace('%s/%s/' % (namespace_url, self.exp['id']))
         self.id_generator = IDGenerator(self.general_namespace, self.protocol_namespace)
-        self.graph = Graph()
-        self.graph_context = [
-            'https://w3id.org/ro/crate/1.1/context',
-            {
-                #'@base': self.protocol_namespace,
-                #'@vocab': 'http://schema.org/',
-                'foaf': FOAF,
-                'xsd': XSD,
-                'rdfs': 'http://www.w3.org/2000/01/rdf-schema#', # NOTE: using RDFS here throws some error
-                'owl': OWL,
-                'wd': 'https://www.wikidata.org/entity/',
-                'prov': 'http://www.w3.org/ns/prov#'
-            }
-        ]
+
+        self.graph = Graph(bind_namespaces='core')
+        self.graph.bind('@base', self.protocol_namespace)
+        self.graph.bind('@vocab', 'https://w3id.org/ro/crate/1.2/context#')
+        self.graph.bind('foaf', FOAF)
+        self.graph.bind('wd', 'https://www.wikidata.org/entity/')
+        self.graph.bind('prov', 'http://www.w3.org/ns/prov#')
+        self.graph.bind('obo', 'http://purl.obolibrary.org/obo/')
 
     @staticmethod
     def create_folder_if_not_exists(folder):
         pfolder = Path(folder)
         pfolder.mkdir(exist_ok=True)
 
+    @staticmethod
+    def get_xsd_type_for_number(number):
+        try:
+            float(number)
+        except ValueError:
+            try:
+                if int(number) < 0:
+                    raise(ValueError)
+            except ValueError:
+                self.log.error('Number is neither float nor int or negative int: %s' % (number))
+                sys.exit(1)
+            else:
+                return(XSD.nonNegativeInteger)
+        else:
+            return(XSD.decimal)
+
     def _update_protocol_links_to_local(self):
         for link in self.exp['soup'].find_all('a'):
+            self.log.debug('Found link "%s"' % link.get('href'))
             if not 'database.php' in link.get('href'):
                 continue
 
             item_id = link.get('href').split('&')[1].replace('id=', '')
             for item in self.items:
-                if item['id'] == item_id:
+                self.log.debug('Checking item "%s" (%s) with link id "%s"' % (
+                    item['title'],
+                    item['id'],
+                    item_id,
+                ))
+                if int(item['id']) == int(item_id):
                     link['href'] = 'Database/%s.html' % (
                         sanitize_filename('%s - %s' % (item['category'], item['title']))
                     )
                     link['target'] = '_blank'
                     # also update the item so that we can re-use the link for
                     # matching the item later:
+                    self.log.debug('Updating local link from item "%s" to "%s"' % (item['title'], link['href']))
                     item['ro-crate_link'] = link['href']
 
     def write_files(self):
@@ -85,6 +110,7 @@ class ELN2Crate:
         protocol_path = os.path.join(self.tempfolder, 'Protocol')
         ELN2Crate.create_folder_if_not_exists(protocol_path)
 
+        self.log.debug('Writing experiment file to "%s"' % (os.path.join(protocol_path, filename)))
         self._update_protocol_links_to_local()
         with open(os.path.join(protocol_path, filename), 'w') as file:
             file.write(str(self.exp['soup']))
@@ -95,6 +121,7 @@ class ELN2Crate:
 
         for item in self.items:
             filename = sanitize_filename('%s - %s' % (item['category'], item['title'])) + '.html'
+            self.log.debug('Writing item file to "%s"' % (os.path.join(database_path, filename)))
             with open(os.path.join(database_path, filename), 'w') as file:
                 file.write(item['body'])
 
@@ -102,13 +129,22 @@ class ELN2Crate:
         attachment_path = os.path.join(self.tempfolder, 'Data')
         ELN2Crate.create_folder_if_not_exists(attachment_path)
 
-        for upload in self.exp.get('uploads'):
-            complete_name = os.path.join(attachment_path, upload['real_name'])
+        for upload in self.uploads_client.read_uploads('experiments', self.exp['id']):
+            complete_name = os.path.join(attachment_path, upload.real_name)
             with open(complete_name, 'wb') as datafile:
-                datafile.write(self.elabftw_manager.get_upload(upload['id']))
+                datafile.write(self.uploads_client.read_upload('experiments', self.exp['id'], upload.id, format='binary', _preload_content=False).data)
 
     def _get_experiment_information(self, exp_id):
-        self.exp = self.elabftw_manager.get_experiment(exp_id)
+        tmp_exp = self.experiments_client.get_experiment(exp_id)
+        self.exp = {
+            'id': tmp_exp.id,
+            'body': tmp_exp.body,
+            'title': tmp_exp.title,
+            'tags': tmp_exp.tags,
+            'lastchange': tmp_exp.modified_at,
+            'category': tmp_exp.category_title,
+            'links': self.exp_items_links_client.read_entity_items_links('experiments', exp_id)
+        }
         # Pseudonymize persons
         for i, name in enumerate(self.pseudonymize_persons):
             self.exp['body'] = self.exp['body'].replace(name, 'Anonymous Person%d' % (i+1))
@@ -119,35 +155,43 @@ class ELN2Crate:
         self.items = []
         # Note: we assume that all items linked in the text appear also in the links
         # at the end of the protocol in order to ensure this, run `updating_links.ipynb`
-        for item in self.exp.get('links'):
-            self.items.append(self.elabftw_manager.get_item(item['itemid']))
+        for item in self.exp['links']:
+            tmp_item = self.items_client.get_item(item.entityid)
+            self.items.append({
+                'id': tmp_item.id,
+                'body': tmp_item.body,
+                'title': tmp_item.title,
+                'lastchange': tmp_item.modified_at,
+                'category': tmp_item.category_title,
+            })
 
-    def _call_siegfried(self):
-        folder_path = os.path.abspath(self.tempfolder)
-        result = subprocess.run(' '.join([
-            '/usr/bin/docker',
-            'run',
-            '--rm',
-            '-v',
-            '%s:%s' % (folder_path, folder_path),
-            '--user',
-            '$(id -u)',
-            'sfbelaine/common:siegfried_latest',
-            'sf',
-            '-sourceinline',
-            '-json',
-            '-hash',
-            'sha512',
-            '-utc',
-            '-z',
-            folder_path
-        ]), capture_output=True, shell=True, check=True)
+    def _call_siegfried(self): # FIXME: disables for now
+        # folder_path = os.path.abspath(self.tempfolder)
+        # result = subprocess.run(' '.join([
+        #     '/usr/bin/docker',
+        #     'run',
+        #     '--rm',
+        #     '-v',
+        #     '%s:%s' % (folder_path, folder_path),
+        #     '--user',
+        #     '$(id -u)',
+        #     'sfbelaine/common:siegfried_latest',
+        #     'sf',
+        #     '-sourceinline',
+        #     '-json',
+        #     '-hash',
+        #     'sha512',
+        #     '-utc',
+        #     '-z',
+        #     folder_path
+        # ]), capture_output=True, shell=True, check=True)
 
-        jsonfile_name = os.path.join(self.tempfolder, 'siegfried_output.json')
-        with open(jsonfile_name, 'wb') as jsonfile:
-            jsonfile.write(result.stdout)
+        # jsonfile_name = os.path.join(self.tempfolder, 'siegfried_output.json')
+        # with open(jsonfile_name, 'wb') as jsonfile:
+        #     jsonfile.write(result.stdout)
 
-        return jsonfile_name
+        # return jsonfile_name
+        return ''
 
     def create_model(self):
         self.sf_output = self._call_siegfried()
@@ -205,9 +249,9 @@ class ELN2Crate:
             # check if additional information are inside elabFTW
             # Data folder contains uploads only, so we can rely on the file name
             if os.path.basename(filename_dir) == 'Data':
-                for upload in self.exp.get('uploads'):
-                    if upload['real_name'] == filename_base:
-                        lastchange = datetime.strptime(upload['datetime'], '%Y-%m-%d %H:%M:%S')
+                for upload in self.uploads_client.read_uploads('experiments', self.exp['id']):
+                    if upload.real_name == filename_base:
+                        lastchange = datetime.strptime(upload.created_at, '%Y-%m-%d %H:%M:%S')
                         self.graph.add((
                             graph_id,
                             URIRef('http://schema.org/dateModified'),
@@ -216,8 +260,8 @@ class ELN2Crate:
                         # Disable this as it allows anybody to download the file
                         # download_url = '%s/app/download.php?f=%s&name=%s&forceDownload' % (
                         #     self.elabftw_url,
-                        #     upload['long_name'],
-                        #     upload['real_name']
+                        #     upload.long_name,
+                        #     upload.real_name
                         # )
                         # self.graph.add((
                         #     graph_id,
@@ -272,30 +316,34 @@ class ELN2Crate:
             ###################################################################
 
             # check if we find corresponding match from siegefried outout
-            with open(self.sf_output) as data_file:
-                data = json.load(data_file)
+            if os.path.isfile(self.sf_output):
+                self.log.debug('Output from siegfried found under "%s"' % (self.sf_output))
+                with open(self.sf_output) as data_file:
+                    data = json.load(data_file)
 
-                for metadata in data['files']:
-                    if filename == metadata['filename'].replace('/tmp/siegfried-files/', ''):
-                        self.graph.add((
-                            graph_id,
-                            URIRef('contentSize'),
-                            Literal(metadata['filesize'])
-                        ))
-                        self.graph.add((graph_id, URIRef('sha512'), Literal(metadata['sha512'])))
-                        # Skip the following information from siegfried for now
-                        # self.graph.add((
-                        #     graph_id,
-                        #     URIRef('matches'),
-                        #     Literal(json.dumps(metadata['matches']))
-                        # ))
-                        # self.graph.add((graph_id, URIRef('errors'), Literal(metadata['errors'])))
-                        break
+                    for metadata in data['files']:
+                        if filename == metadata['filename'].replace('/tmp/siegfried-files/', ''):
+                            self.graph.add((
+                                graph_id,
+                                URIRef('contentSize'),
+                                Literal(metadata['filesize'])
+                            ))
+                            self.graph.add((graph_id, URIRef('sha512'), Literal(metadata['sha512'])))
+                            # Skip the following information from siegfried for now
+                            # self.graph.add((
+                            #     graph_id,
+                            #     URIRef('matches'),
+                            #     Literal(json.dumps(metadata['matches']))
+                            # ))
+                            # self.graph.add((graph_id, URIRef('errors'), Literal(metadata['errors'])))
+                            break
 
 
     def _model_items(self):
         # TODO: add the author of the item?
         for item in self.items:
+            self.log.debug('Modelling item "%s"' % (item['title']))
+
             graph_item = self.id_generator.getDBItem(item)
             self.graph.add((graph_item, FOAF.name, Literal(item['title'], lang='en')))
             self.graph.add((graph_item, RDF.type, URIRef('IndividualProduct')))
@@ -390,7 +438,7 @@ class ELN2Crate:
         self.graph.add((
             graph_base,
             URIRef('conformsTo'),
-            URIRef('https://w3id.org/ro/crate/1.1')
+            URIRef('https://w3id.org/ro/crate/1.2')
         ))
         self.graph.add((graph_base, URIRef('about'), self.graph_dir))
 
@@ -472,13 +520,14 @@ class ELN2Crate:
             temperature = temperature_search.group()
 
             if re.search(r'°\s*C', temperature):
+                temperature_number = re.match(r'[+-]?[\.\d]+', temperature.strip()).group()
                 self._add_parameter_nodes(
                     step_id,
                     URIRef('http://purl.obolibrary.org/obo/OBI_0002138'),
                     Literal(temperature),
                     Literal(
-                        re.match(r'[+-]?[\.\d]+', temperature.strip()).group(),
-                        datatype=XSD.decimal
+                        temperature_number,
+                        datatype=ELN2Crate.get_xsd_type_for_number(temperature_number)
                     ),
                     URIRef('http://purl.obolibrary.org/obo/UO_0000027') # degree Celsius
                 )
@@ -491,13 +540,14 @@ class ELN2Crate:
             frequency = frequency_search.group()
 
             if re.search(r'Hz', frequency):
+                frequency_number = re.match(r'[+-]?[\.\d]+', frequency.strip()).group()
                 self._add_parameter_nodes(
                     step_id,
                     URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
                     Literal(frequency),
                     Literal(
-                        re.match(r'[+-]?[\.\d]+', frequency.strip()).group(),
-                        datatype=XSD.decimal
+                        frequency_number,
+                        datatype=ELN2Crate.get_xsd_type_for_number(frequency_number)
                     ),
                     URIRef('http://purl.obolibrary.org/obo/UO_0000106') # degree Celsius
                 )
@@ -518,12 +568,13 @@ class ELN2Crate:
                 self.log.error('Duration uses unknown unit: '+ duration)
                 sys.exit(1)
 
+            duration_number = re.match(r'[+-]?[\.\d]+', duration.strip()).group()
             self._add_parameter_nodes(
                 step_id,
                 URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
                 Literal(duration),
-                Literal(re.match(r'[+-]?[\.\d]+', duration.strip()).group(), \
-                    datatype=XSD.nonNegativeInteger),
+                Literal(duration_number, \
+                        datatype=ELN2Crate.get_xsd_type_for_number(duration_number)),
                 duration_unit
             )
 
@@ -531,13 +582,14 @@ class ELN2Crate:
         for voltage_search in re.finditer(r'[+-]?[\.\d]+\s*V', description):
             voltage = voltage_search.group()
 
+            voltage_number = re.match(r'[+-]?[\.\d]+', voltage.strip()).group()
             if re.search(r'V', voltage):
                 self._add_parameter_nodes(
                     step_id,
                     URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
                     Literal(voltage),
-                    Literal(re.match(r'[+-]?[\.\d]+', voltage.strip()).group(), \
-                        datatype=XSD.nonNegativeInteger),
+                    Literal(voltage_number, \
+                        datatype=ELN2Crate.get_xsd_type_for_number(voltage_number)),
                     URIRef('http://purl.obolibrary.org/obo/UO_0000218') # V
                 )
             else:
@@ -922,6 +974,7 @@ class ELN2Crate:
                         ))
 
                 # now, let's model the template:
+                self.log.debug('Tags in this experiment "%s"' % (self.exp['tags']))
                 for tag in self.exp['tags'].split('|'):
                     tag_lower = tag.lower()
                     if templates.get(tag_lower):
@@ -1102,10 +1155,11 @@ class ELN2Crate:
     def write_crate(self, target_archive):
         self.graph.serialize(
             format="json-ld",
-            context=self.graph_context,
+            auto_compact=True,
             destination=os.path.join(self.tempfolder, 'ro-crate-metadata.json')
         )
         shutil.make_archive(target_archive, 'zip', self.tempfolder)
 
     def __del__(self):
-        shutil.rmtree(self.tempfolder)
+        if os.path.isdir(self.tempfolder):
+            shutil.rmtree(self.tempfolder)

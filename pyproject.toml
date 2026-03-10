@@ -1,0 +1,9 @@
+[project]
+name = "eln2crate"
+version = "2.0.0"
+dependencies = [
+    "rdflib~=7.6.0",
+    "pathvalidate~=3.3.1",
+    "beautifulsoup4~=4.14.3",
+    "elabapi-python~=5.4.2"
+]
