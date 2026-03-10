@@ -62,8 +62,7 @@ class ELN2Crate:
         pfolder = Path(folder)
         pfolder.mkdir(exist_ok=True)
 
-    @staticmethod
-    def get_xsd_type_for_number(number):
+    def _get_xsd_type_for_number(self, number):
         try:
             float(number)
         except ValueError:
@@ -530,7 +529,7 @@ class ELN2Crate:
                     Literal(temperature),
                     Literal(
                         temperature_number,
-                        datatype=ELN2Crate.get_xsd_type_for_number(temperature_number)
+                        datatype=self._get_xsd_type_for_number(temperature_number)
                     ),
                     URIRef('http://purl.obolibrary.org/obo/UO_0000027') # degree Celsius
                 )
@@ -550,7 +549,7 @@ class ELN2Crate:
                     Literal(frequency),
                     Literal(
                         frequency_number,
-                        datatype=ELN2Crate.get_xsd_type_for_number(frequency_number)
+                        datatype=self._get_xsd_type_for_number(frequency_number)
                     ),
                     URIRef('http://purl.obolibrary.org/obo/UO_0000106') # degree Celsius
                 )
@@ -577,7 +576,7 @@ class ELN2Crate:
                 URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
                 Literal(duration),
                 Literal(duration_number, \
-                        datatype=ELN2Crate.get_xsd_type_for_number(duration_number)),
+                        datatype=self._get_xsd_type_for_number(duration_number)),
                 duration_unit
             )
 
@@ -592,7 +591,7 @@ class ELN2Crate:
                     URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
                     Literal(voltage),
                     Literal(voltage_number, \
-                        datatype=ELN2Crate.get_xsd_type_for_number(voltage_number)),
+                        datatype=self._get_xsd_type_for_number(voltage_number)),
                     URIRef('http://purl.obolibrary.org/obo/UO_0000218') # V
                 )
             else:
