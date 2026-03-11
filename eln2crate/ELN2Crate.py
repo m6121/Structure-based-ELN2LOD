@@ -180,7 +180,6 @@ class ELN2Crate:
             '$(id -u)',
             self.siegfried_image,
             'sf',
-            '-sourceinline',
             '-json',
             '-hash',
             'sha512',
