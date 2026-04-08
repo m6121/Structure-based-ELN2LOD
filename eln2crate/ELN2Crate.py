@@ -544,10 +544,10 @@ class ELN2Crate:
             rps = None # variable indicating recalculation
             if re.search(r'Hz', frequency):
                 frequency_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000106') # hertz
-            elif re.search(r'(rpm', frequency):
+            elif re.search(r'rpm', frequency):
                 rps = True
                 frequency_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000092') # only turns per second available
-            elif re.search(r'(rps', frequency):
+            elif re.search(r'rps', frequency):
                 rps = False
                 frequency_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000092') # turns per second
             else:
