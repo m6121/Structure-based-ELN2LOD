@@ -1,6 +1,7 @@
 import copy
 import glob
 import json
+import locale
 import os
 import re
 import shutil
@@ -37,6 +38,8 @@ class ELN2Crate:
         self.elabftw_client = elabftw_client
         self.siegfried_image = siegfried_image
 
+        locale.setlocale( locale.LC_ALL, 'en_US.UTF-8' )
+
         self.items_client = elabapi_python.ItemsApi(self.elabftw_client)
         self.experiments_client = elabapi_python.ExperimentsApi(self.elabftw_client)
         self.uploads_client = elabapi_python.UploadsApi(self.elabftw_client)
@@ -64,10 +67,10 @@ class ELN2Crate:
 
     def _get_xsd_type_for_number(self, number):
         try:
-            float(number)
+            locale.atof(number)
         except ValueError:
             try:
-                if int(number) < 0:
+                if locale.atoi(number) < 0:
                     raise(ValueError)
             except ValueError:
                 self.log.error('Number is neither float nor int or negative int: %s' % (number))
@@ -538,7 +541,7 @@ class ELN2Crate:
                 sys.exit(1)
 
         # FREQUENCY
-        for frequency_search in re.finditer(r'[+-]?[\.\d]+\s*(Hz|rpm|rps)', description):
+        for frequency_search in re.finditer(r'[+-]?[,\.\d]+\s*(Hz|rpm|rps)', description):
             frequency = frequency_search.group()
 
             rps = None # variable indicating recalculation
@@ -554,13 +557,13 @@ class ELN2Crate:
                 self.log.error('frequency uses unknown unit: '+ duration)
                 sys.exit(1)
 
-            frequency_number = re.match(r'[+-]?[\.\d]+', frequency.strip()).group()
+            frequency_number = re.match(r'[+-]?[,\.\d]+', frequency.strip()).group()
             self._add_parameter_nodes(
                 step_id,
                 URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
                 Literal(frequency),
                 Literal(
-                    frequency_number / 60 if rps else frequency_number,
+                    locale.atof(frequency_number) / 60 if rps else frequency_number,
                     datatype=self._get_xsd_type_for_number(frequency_number)
                 ),
                 frequency_unit
