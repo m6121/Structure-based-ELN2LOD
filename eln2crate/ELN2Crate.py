@@ -143,6 +143,7 @@ class ELN2Crate:
             'tags': tmp_exp.tags,
             'lastchange': tmp_exp.modified_at,
             'category': tmp_exp.category_title,
+            'status': tmp_exp.status_title,
             'links': self.exp_items_links_client.read_entity_items_links('experiments', exp_id)
         }
         # Pseudonymize persons
@@ -537,24 +538,33 @@ class ELN2Crate:
                 sys.exit(1)
 
         # FREQUENCY
-        for frequency_search in re.finditer(r'[+-]?[\.\d]+\s*Hz', description):
+        for frequency_search in re.finditer(r'[+-]?[\.\d]+\s*(Hz|rpm|rps)', description):
             frequency = frequency_search.group()
 
+            rps = None # variable indicating recalculation
             if re.search(r'Hz', frequency):
-                frequency_number = re.match(r'[+-]?[\.\d]+', frequency.strip()).group()
-                self._add_parameter_nodes(
-                    step_id,
-                    URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
-                    Literal(frequency),
-                    Literal(
-                        frequency_number,
-                        datatype=self._get_xsd_type_for_number(frequency_number)
-                    ),
-                    URIRef('http://purl.obolibrary.org/obo/UO_0000106') # degree Celsius
-                )
+                frequency_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000106') # hertz
+            elif re.search(r'(rpm', frequency):
+                rps = True
+                frequency_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000092') # only turns per second available
+            elif re.search(r'(rps', frequency):
+                rps = False
+                frequency_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000092') # turns per second
             else:
-                self.log.error('frequency uses unknown unit: '+ frequency)
+                self.log.error('frequency uses unknown unit: '+ duration)
                 sys.exit(1)
+
+            frequency_number = re.match(r'[+-]?[\.\d]+', frequency.strip()).group()
+            self._add_parameter_nodes(
+                step_id,
+                URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
+                Literal(frequency),
+                Literal(
+                    frequency_number / 60 if rps else frequency_number,
+                    datatype=self._get_xsd_type_for_number(frequency_number)
+                ),
+                frequency_unit
+            )
 
         # DURATION
         for duration_search in re.finditer(r'[+-]?[\.\d]+\s*(min|ms)', description):
@@ -951,7 +961,7 @@ class ELN2Crate:
                 self.graph.add((
                     protocol_id,
                     URIRef('experiment_success'),
-                    Literal(True if self.exp['category'] == 'Success' else False, \
+                    Literal(True if self.exp['status'] == 'Success' else False, \
                         datatype=XSD.boolean)
                 ))
                 # TODO: add RDF.type
