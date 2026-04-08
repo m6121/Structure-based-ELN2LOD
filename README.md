@@ -53,4 +53,4 @@ where the following variables have been set:
 * `ELABFTW_MANAGER` an initialized version of the `elabapy.Manager()` with read permissions on the experiment and the corresponding inventory items
 * `EXP_ID` the experiment ID that should be bundled
 * `PSEUDONYMIZE_PERSONS` is an array of strings that should be replaced by pseudonymized before bundling in order to protect privacy.
-* *Optional* `SIEGFRIED_IMAGE` is a string with the docker image to be used to invoke [siegfried](https://github.com/richardlehane/siegfried) for the file format identification. In order to disable the integration of the siegfried output, use `None`. By default the following image is used: `'sfbelaine/common:siegfried_latest'`
+* *Optional* `SIEGFRIED_IMAGE` is a string with the docker image to be used to invoke [siegfried](https://github.com/richardlehane/siegfried) for the file format identification. In order to disable the integration of the siegfried output, use `None`. By default the following image is used: `'sfbelaine/common:siegfried_latest'` **Note: pulling the image is not enforced, i.e. if it is already present at the docker host, the local image will be used**
