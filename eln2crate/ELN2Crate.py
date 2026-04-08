@@ -55,6 +55,7 @@ class ELN2Crate:
         self.graph = Graph(bind_namespaces='core')
         self.graph.bind('@base', self.protocol_namespace)
         self.graph.bind('@vocab', 'https://w3id.org/ro/crate/1.2/context#')
+        self.graph.bind('elaine', 'https://eln-provenance.elaine.uni-rostock.de/ontology/0.1/')
         self.graph.bind('foaf', FOAF)
         self.graph.bind('wd', 'https://www.wikidata.org/entity/')
         self.graph.bind('prov', 'http://www.w3.org/ns/prov#')
@@ -417,7 +418,7 @@ class ELN2Crate:
                         ['manufacturer', 'supplier', 'developer']]:
                         self.graph.add((
                             graph_item,
-                            URIRef('has_supplier_id'), # FIXME: define custom relation
+                            URIRef('manufacturer'),
                             Literal(row.contents[3].text.strip())
                         ))
                         continue
@@ -714,18 +715,18 @@ class ELN2Crate:
                     # now add LOT-specific infos
                     self.graph.add((
                         medium_id,
-                        URIRef('has_lot_number'), # FIXME: define custom relation
+                        URIRef('elaine:has_lot_number'), # FIXME: define custom property
                         Literal(lot_search.group(), lang='en')
                     ))
                     self.graph.add((
                         medium_id,
-                        URIRef('is_instance_of'), # FIXME: define custom relation
+                        URIRef('elaine:is_instance_of'), # FIXME: define custom property
                         db_id
                     ))
                     if passage_search:
                         self.graph.add((
                             medium_id,
-                            URIRef('has_passage_number'), # FIXME: define custom relation
+                            URIRef('elaine:has_passage_number'), # FIXME: define custom property
                             Literal(passage_search.group(), lang='en')
                         ))
 
@@ -963,7 +964,7 @@ class ELN2Crate:
                 ))
                 self.graph.add((
                     protocol_id,
-                    URIRef('experiment_success'),
+                    URIRef('elaine:experiment_success'), # FIXME: define custom property
                     Literal(True if self.exp['status'] == 'Success' else False, \
                         datatype=XSD.boolean)
                 ))
