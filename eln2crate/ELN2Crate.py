@@ -507,7 +507,7 @@ class ELN2Crate:
         node_id = BNode()
         self.graph.add((node_id, RDF.type, value_specification))
         self.graph.add((node_id, RDFS.label, label))
-        self.graph.add((node_id, URIRef('prov:value'), value))
+        self.graph.add((node_id, URIRef('value'), value))
         self.graph.add((
             node_id,
             URIRef('http://purl.obolibrary.org/obo/IAO_0000039'), # has measurement unit label
@@ -519,6 +519,26 @@ class ELN2Crate:
             node_id
         ))
 
+    def _model_volume(self, usage_id, volume_text):
+        if re.search(r'ml', volume_text):
+            volume_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000098') # milliliter
+        elif re.search(r'µl', volume_text):
+            volume_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000101') # microliter
+        else:
+            self.log.error('volume uses unknown unit: '+ volume_text)
+            sys.exit(1)
+
+        volume_number = re.match(r'[+-]?[,\.\d]+', volume_text.strip()).group()
+        self._add_parameter_nodes(
+            usage_id,
+            URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
+            Literal(volume_text),
+            Literal(
+                volume_number,
+                datatype=self._get_xsd_type_for_number(volume_number)
+            ),
+            volume_unit
+        )
 
     def _model_parameters(self, step_id, description):
         # TEMPERATURE
@@ -555,7 +575,7 @@ class ELN2Crate:
                 rps = False
                 frequency_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000092') # turns per second
             else:
-                self.log.error('frequency uses unknown unit: '+ duration)
+                self.log.error('frequency uses unknown unit: '+ frequency)
                 sys.exit(1)
 
             frequency_number = re.match(r'[+-]?[,\.\d]+', frequency.strip()).group()
@@ -637,7 +657,7 @@ class ELN2Crate:
             self.graph.add((
                 researcher_id,
                 URIRef('foaf:name'),
-                Literal("%s %s" % (researcher['givenName'], researcher['familyName']), \
+                Literal('%s %s' % (researcher['givenName'], researcher['familyName']), \
                     datatype=XSD.string)
             ))
             self.graph.add((
@@ -679,17 +699,28 @@ class ELN2Crate:
                     if item['ro-crate_link'] == link['href']:
                         count_links += 1
                         tmp_items.append(item)
-                        current_items.append(self.id_generator.getDBItem(item))
+                        current_items.append(('', self.id_generator.getDBItem(item)))
                         break
 
-        # check for LOT number, passage number and attributions
+        # check for LOT number, passage number, attributions and volume
         # NOTE: we assume that in a single list item there is maximum one of each:
         # * LOT number
         # * passage number
         # * attribution
-        lot_search = re.search(r'LOT \w+', element.text)
+        # * volume directly before a database link
+        # * volume before a mixture separated by ":"
+        lot_search = re.search(r'LOT \w+', element.text) #FIXME: add \s for whitespace?
         passage_search = re.search(r'Passage \d+', element.text)
         attributed_search = re.search(r'\(Attributed to .+\)', element.text)
+        # NOTE: since we are looking for a link to the database we use the HTML
+        # code instead of the text here:
+        volume_search = re.search(r'[+-]?[\.\d]+\s*(µl|ml) \<a href="Database/', str(element))
+        self.log.debug('database volume search is "%s" in element "%s"' % (volume_search, str(element)))
+        if not volume_search:
+            volume_search = re.search(r'[+-]?[\.\d]+\s*(µl|ml):', element.text)
+            self.log.debug('mixture volume search is "%s" in element "%s"' % (volume_search, element.text))
+        volume_info = re.search(r'[+-]?[\.\d]+\s*(µl|ml)', volume_search.group()).group() if volume_search else ''
+        self.log.debug('volume info is "%s" in element "%s"' % (volume_info, element.text))
 
         if attributed_search:
             # first of all, add researcher
@@ -699,7 +730,8 @@ class ELN2Crate:
 
         # we found at least one link to a database item
         if count_links == 1:
-            db_id = current_items[0]
+            # NOTE: we are not interested in volume information of the already added current item
+            _, db_id = current_items[0]
             if lot_search:
                 lot_number = lot_search.group().replace('LOT ', '')
                 if passage_search:
@@ -731,7 +763,13 @@ class ELN2Crate:
                         ))
 
                 # NOTE: as we use a lot/passage number, replace item with the specific id
-                current_items = [medium_id]
+                # add volume info along with current item
+                current_items = [(volume_info, medium_id)]
+            else:
+                # overwrite with volume info, if we found one
+                # NOTE: as we found only one item, this can safely be overwritten with db_id
+                current_items = [(volume_info, db_id)]
+                self.log.debug('add volume info "%s" about db_id "%s"' % (volume_info, db_id))
 
         if count_links > 1:
             # check if we have the medium description which actually is a mixture
@@ -827,7 +865,9 @@ class ELN2Crate:
                         medium_id
                     ))
 
-                    for item in current_items:
+                    # NOTE: as we assuem only one volume information, we expect this for the mixture itself
+                    # and not for the particular parts, i.e. skip this info in the current list
+                    for _, item in current_items:
                         self.graph.add((
                             medium_creating_id,
                             URIRef('http://purl.obolibrary.org/obo/OBI_0000293'), # has_specified_input #TODO: Alternative: prov:used?
@@ -847,7 +887,8 @@ class ELN2Crate:
                     ))
 
                 # NOTE: as we use the mixture instead, replace all items with the mixture id
-                current_items = [medium_id]
+                # add volume info along with current item
+                current_items = [(volume_info, medium_id)]
 
                 if attributed_search:
                     self.graph.add((medium_id, URIRef('prov:wasAttributedTo'), researcher_id))
@@ -1078,9 +1119,17 @@ class ELN2Crate:
         )
 
     def _add_used_items(self, node_id, used_items):
-        for item in used_items:
+        for (volume_info, item) in used_items:
             self.graph.add((node_id, URIRef('prov:used'), item))
+            if volume_info:
+                self._model_usage(volume_info, node_id, item)
 
+    def _model_usage(self, volume_info, activity, entity):
+        usage_id = self.id_generator.getUsage(activity, entity)
+        self._model_volume(usage_id, volume_info)
+        self.graph.add((usage_id, RDF.type, URIRef('prov:Usage')))
+        self.graph.add((usage_id, URIRef('prov:entity'), entity))
+        self.graph.add((activity, URIRef('prov:qualifiedUsage'), usage_id))
 
     def _model_general_steps(self, soup_table, id_prefix):
         for idx, row in enumerate(soup_table.find_all('tr')):
@@ -1142,19 +1191,23 @@ class ELN2Crate:
 
             # if the description contains further structure, iterate over contents
             used_items = []
-            if row.contents[1].find_all(["ol", "ul"]):
+            if row.contents[1].find_all(['ol', 'ul']):
                 for element_part in row.contents[1].contents:
                     used_items += self._model_general_part(element_part)
             else:
                 used_items += self._model_general_part(row.contents[1])
 
             # now, add all the used items to this step:
-            for item_id in used_items:
+            for volume_info, item_id in used_items:
                 self.graph.add((
                     step_id,
                     URIRef('prov:used'),
                     item_id
                 ))
+                if volume_info:
+                    self._model_usage(volume_info, step_id, item_id)
+
+
 
             # however, for the linking of files, we want to search in the overall list
             for link in row.contents[1].find_all('a'):
@@ -1169,7 +1222,7 @@ class ELN2Crate:
 
     def write_crate(self, target_archive):
         self.graph.serialize(
-            format="json-ld",
+            format='json-ld',
             auto_compact=True,
             destination=os.path.join(self.tempfolder, 'ro-crate-metadata.json')
         )
