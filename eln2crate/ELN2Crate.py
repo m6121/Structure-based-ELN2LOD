@@ -1,12 +1,15 @@
 import copy
 import glob
 import json
+import locale
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+
+import elabapi_python
 
 from datetime import datetime
 from pathlib import Path
@@ -29,50 +32,76 @@ class ProtocolElementUnknown(Exception):
     pass
 
 class ELN2Crate:
-    def __init__(self, logger, namespace_url, elabftw_url, elabftw_manager, exp_id, pseudonymize_persons):
+    def __init__(self, logger, namespace_url, elabftw_url, elabftw_client, exp_id, pseudonymize_persons, siegfried_image='sfbelaine/common:siegfried_latest'):
         self.log = logger
         self.elabftw_url = elabftw_url
-        self.elabftw_manager = elabftw_manager
+        self.elabftw_client = elabftw_client
+        self.siegfried_image = siegfried_image
+
+        locale.setlocale( locale.LC_ALL, 'en_US.UTF-8' )
+
+        self.items_client = elabapi_python.ItemsApi(self.elabftw_client)
+        self.experiments_client = elabapi_python.ExperimentsApi(self.elabftw_client)
+        self.uploads_client = elabapi_python.UploadsApi(self.elabftw_client)
+        self.exp_items_links_client = elabapi_python.LinksToItemsApi(self.elabftw_client)
+
         self.tempfolder = tempfile.mkdtemp()
         self.pseudonymize_persons = pseudonymize_persons
         self._get_experiment_information(exp_id)
         self.general_namespace = Namespace(namespace_url + '/')
         self.protocol_namespace = Namespace('%s/%s/' % (namespace_url, self.exp['id']))
         self.id_generator = IDGenerator(self.general_namespace, self.protocol_namespace)
-        self.graph = Graph()
-        self.graph_context = [
-            'https://w3id.org/ro/crate/1.1/context',
-            {
-                #'@base': self.protocol_namespace,
-                #'@vocab': 'https://schema.org/',
-                'foaf': FOAF,
-                'xsd': XSD,
-                'rdfs': 'http://www.w3.org/2000/01/rdf-schema#', # NOTE: using RDFS here throws some error
-                'owl': OWL,
-                'wd': 'https://www.wikidata.org/entity/',
-                'prov': 'http://www.w3.org/ns/prov#'
-            }
-        ]
+
+        self.graph = Graph(bind_namespaces='core')
+        self.graph.bind('@base', self.protocol_namespace)
+        self.graph.bind('@vocab', 'https://w3id.org/ro/crate/1.2/context#')
+        self.graph.bind('elaine', 'https://eln-provenance.elaine.uni-rostock.de/ontology/0.1/')
+        self.graph.bind('foaf', FOAF)
+        self.graph.bind('wd', 'https://www.wikidata.org/entity/')
+        self.graph.bind('prov', 'http://www.w3.org/ns/prov#')
+        self.graph.bind('obo', 'http://purl.obolibrary.org/obo/')
 
     @staticmethod
     def create_folder_if_not_exists(folder):
         pfolder = Path(folder)
         pfolder.mkdir(exist_ok=True)
 
+    def _get_xsd_type_for_number(self, number):
+        try:
+            locale.atof(number)
+        except ValueError:
+            try:
+                if locale.atoi(number) < 0:
+                    raise(ValueError)
+            except ValueError:
+                self.log.error('Number is neither float nor int or negative int: %s' % (number))
+                sys.exit(1)
+            else:
+                return(XSD.nonNegativeInteger)
+        else:
+            return(XSD.decimal)
+
     def _update_protocol_links_to_local(self):
         for link in self.exp['soup'].find_all('a'):
+            self.log.debug('Found link "%s"' % link.get('href'))
             if not 'database.php' in link.get('href'):
                 continue
 
             item_id = link.get('href').split('&')[1].replace('id=', '')
             for item in self.items:
-                if item['id'] == item_id:
+                self.log.debug('Checking item "%s" (%s) with link id "%s"' % (
+                    item['title'],
+                    item['id'],
+                    item_id,
+                ))
+                if int(item['id']) == int(item_id):
                     link['href'] = 'Database/%s.html' % (
                         sanitize_filename('%s - %s' % (item['category'], item['title']))
                     )
                     link['target'] = '_blank'
                     # also update the item so that we can re-use the link for
                     # matching the item later:
+                    self.log.debug('Updating local link from item "%s" to "%s"' % (item['title'], link['href']))
                     item['ro-crate_link'] = link['href']
 
     def write_files(self):
@@ -85,6 +114,7 @@ class ELN2Crate:
         protocol_path = os.path.join(self.tempfolder, 'Protocol')
         ELN2Crate.create_folder_if_not_exists(protocol_path)
 
+        self.log.debug('Writing experiment file to "%s"' % (os.path.join(protocol_path, filename)))
         self._update_protocol_links_to_local()
         with open(os.path.join(protocol_path, filename), 'w') as file:
             file.write(str(self.exp['soup']))
@@ -95,6 +125,7 @@ class ELN2Crate:
 
         for item in self.items:
             filename = sanitize_filename('%s - %s' % (item['category'], item['title'])) + '.html'
+            self.log.debug('Writing item file to "%s"' % (os.path.join(database_path, filename)))
             with open(os.path.join(database_path, filename), 'w') as file:
                 file.write(item['body'])
 
@@ -102,13 +133,23 @@ class ELN2Crate:
         attachment_path = os.path.join(self.tempfolder, 'Data')
         ELN2Crate.create_folder_if_not_exists(attachment_path)
 
-        for upload in self.exp.get('uploads'):
-            complete_name = os.path.join(attachment_path, upload['real_name'])
+        for upload in self.uploads_client.read_uploads('experiments', self.exp['id']):
+            complete_name = os.path.join(attachment_path, upload.real_name)
             with open(complete_name, 'wb') as datafile:
-                datafile.write(self.elabftw_manager.get_upload(upload['id']))
+                datafile.write(self.uploads_client.read_upload('experiments', self.exp['id'], upload.id, format='binary', _preload_content=False).data)
 
     def _get_experiment_information(self, exp_id):
-        self.exp = self.elabftw_manager.get_experiment(exp_id)
+        tmp_exp = self.experiments_client.get_experiment(exp_id)
+        self.exp = {
+            'id': tmp_exp.id,
+            'body': tmp_exp.body,
+            'title': tmp_exp.title,
+            'tags': tmp_exp.tags,
+            'lastchange': tmp_exp.modified_at,
+            'category': tmp_exp.category_title,
+            'status': tmp_exp.status_title,
+            'links': self.exp_items_links_client.read_entity_items_links('experiments', exp_id)
+        }
         # Pseudonymize persons
         for i, name in enumerate(self.pseudonymize_persons):
             self.exp['body'] = self.exp['body'].replace(name, 'Anonymous Person%d' % (i+1))
@@ -119,10 +160,20 @@ class ELN2Crate:
         self.items = []
         # Note: we assume that all items linked in the text appear also in the links
         # at the end of the protocol in order to ensure this, run `updating_links.ipynb`
-        for item in self.exp.get('links'):
-            self.items.append(self.elabftw_manager.get_item(item['itemid']))
+        for item in self.exp['links']:
+            tmp_item = self.items_client.get_item(item.entityid)
+            self.items.append({
+                'id': tmp_item.id,
+                'body': tmp_item.body,
+                'title': tmp_item.title,
+                'lastchange': tmp_item.modified_at,
+                'category': tmp_item.category_title,
+            })
 
     def _call_siegfried(self):
+        if not self.siegfried_image:
+            return None
+
         folder_path = os.path.abspath(self.tempfolder)
         result = subprocess.run(' '.join([
             '/usr/bin/docker',
@@ -132,9 +183,8 @@ class ELN2Crate:
             '%s:%s' % (folder_path, folder_path),
             '--user',
             '$(id -u)',
-            'sfbelaine/common:siegfried_latest',
+            self.siegfried_image,
             'sf',
-            '-sourceinline',
             '-json',
             '-hash',
             'sha512',
@@ -188,7 +238,7 @@ class ELN2Crate:
                     lastchange = datetime.strptime(data['scandate'], '%Y-%m-%dT%H:%M:%SZ')
                     self.graph.add((
                         graph_id,
-                        URIRef('https://schema.org/dateModified'),
+                        URIRef('http://schema.org/dateModified'),
                         Literal(lastchange, datatype=XSD.dateTime)
                     ))
                     # the following information will be skipped for now
@@ -205,19 +255,19 @@ class ELN2Crate:
             # check if additional information are inside elabFTW
             # Data folder contains uploads only, so we can rely on the file name
             if os.path.basename(filename_dir) == 'Data':
-                for upload in self.exp.get('uploads'):
-                    if upload['real_name'] == filename_base:
-                        lastchange = datetime.strptime(upload['datetime'], '%Y-%m-%d %H:%M:%S')
+                for upload in self.uploads_client.read_uploads('experiments', self.exp['id']):
+                    if upload.real_name == filename_base:
+                        lastchange = datetime.strptime(upload.created_at, '%Y-%m-%d %H:%M:%S')
                         self.graph.add((
                             graph_id,
-                            URIRef('https://schema.org/dateModified'),
+                            URIRef('http://schema.org/dateModified'),
                             Literal(lastchange, datatype=XSD.dateTime)
                         ))
                         # Disable this as it allows anybody to download the file
                         # download_url = '%s/app/download.php?f=%s&name=%s&forceDownload' % (
                         #     self.elabftw_url,
-                        #     upload['long_name'],
-                        #     upload['real_name']
+                        #     upload.long_name,
+                        #     upload.real_name
                         # )
                         # self.graph.add((
                         #     graph_id,
@@ -235,7 +285,7 @@ class ELN2Crate:
             #     lastchange = datetime.strptime(self.exp['lastchange'], '%Y-%m-%d %H:%M:%S')
             #     self.graph.add((
             #         graph_id,
-            #         URIRef('https://schema.org/dateModified'),
+            #         URIRef('http://schema.org/dateModified'),
             #         Literal(lastchange, datatype=XSD.dateTime)
             #     ))
             #     experiment_url = '%s/experiments.php?mode=view&id=%s' % (
@@ -256,7 +306,7 @@ class ELN2Crate:
             #             lastchange = datetime.strptime(item['lastchange'], '%Y-%m-%d %H:%M:%S')
             #             self.graph.add((
             #                 graph_id,
-            #                 URIRef('https://schema.org/dateModified'),
+            #                 URIRef('http://schema.org/dateModified'),
             #                 Literal(lastchange, datatype=XSD.dateTime)
             #             ))
             #             database_url = '%s/database.php?mode=view&id=%s' % (
@@ -272,30 +322,34 @@ class ELN2Crate:
             ###################################################################
 
             # check if we find corresponding match from siegefried outout
-            with open(self.sf_output) as data_file:
-                data = json.load(data_file)
+            if self.sf_output and os.path.isfile(self.sf_output):
+                self.log.debug('Output from siegfried found under "%s"' % (self.sf_output))
+                with open(self.sf_output) as data_file:
+                    data = json.load(data_file)
 
-                for metadata in data['files']:
-                    if filename == metadata['filename'].replace('/tmp/siegfried-files/', ''):
-                        self.graph.add((
-                            graph_id,
-                            URIRef('contentSize'),
-                            Literal(metadata['filesize'])
-                        ))
-                        self.graph.add((graph_id, URIRef('sha512'), Literal(metadata['sha512'])))
-                        # Skip the following information from siegfried for now
-                        # self.graph.add((
-                        #     graph_id,
-                        #     URIRef('matches'),
-                        #     Literal(json.dumps(metadata['matches']))
-                        # ))
-                        # self.graph.add((graph_id, URIRef('errors'), Literal(metadata['errors'])))
-                        break
+                    for metadata in data['files']:
+                        if filename == metadata['filename'].replace('/tmp/siegfried-files/', ''):
+                            self.graph.add((
+                                graph_id,
+                                URIRef('contentSize'),
+                                Literal(metadata['filesize'])
+                            ))
+                            self.graph.add((graph_id, URIRef('sha512'), Literal(metadata['sha512'])))
+                            # Skip the following information from siegfried for now
+                            # self.graph.add((
+                            #     graph_id,
+                            #     URIRef('matches'),
+                            #     Literal(json.dumps(metadata['matches']))
+                            # ))
+                            # self.graph.add((graph_id, URIRef('errors'), Literal(metadata['errors'])))
+                            break
 
 
     def _model_items(self):
         # TODO: add the author of the item?
         for item in self.items:
+            self.log.debug('Modelling item "%s"' % (item['title']))
+
             graph_item = self.id_generator.getDBItem(item)
             self.graph.add((graph_item, FOAF.name, Literal(item['title'], lang='en')))
             self.graph.add((graph_item, RDF.type, URIRef('IndividualProduct')))
@@ -306,7 +360,7 @@ class ELN2Crate:
             lastchange = datetime.strptime(item['lastchange'], '%Y-%m-%d %H:%M:%S')
             self.graph.add((
                 graph_item,
-                URIRef('https://schema.org/dateModified'),
+                URIRef('http://schema.org/dateModified'),
                 Literal(lastchange, datatype=XSD.dateTime)
             ))
             # disable the database url for now
@@ -335,7 +389,7 @@ class ELN2Crate:
                     if content == 'ontology-item':
                         self.graph.add((
                             graph_item,
-                            OWL.sameAs,
+                            RDF.type,
                             URIRef(row.contents[3].text.strip())
                         ))
                         assigned = True
@@ -364,7 +418,7 @@ class ELN2Crate:
                         ['manufacturer', 'supplier', 'developer']]:
                         self.graph.add((
                             graph_item,
-                            URIRef('has_supplier_id'), # FIXME: define custom relation
+                            URIRef('manufacturer'),
                             Literal(row.contents[3].text.strip())
                         ))
                         continue
@@ -390,7 +444,7 @@ class ELN2Crate:
         self.graph.add((
             graph_base,
             URIRef('conformsTo'),
-            URIRef('https://w3id.org/ro/crate/1.1')
+            URIRef('https://w3id.org/ro/crate/1.2')
         ))
         self.graph.add((graph_base, URIRef('about'), self.graph_dir))
 
@@ -453,7 +507,7 @@ class ELN2Crate:
         node_id = BNode()
         self.graph.add((node_id, RDF.type, value_specification))
         self.graph.add((node_id, RDFS.label, label))
-        self.graph.add((node_id, URIRef('prov:value'), value))
+        self.graph.add((node_id, URIRef('value'), value))
         self.graph.add((
             node_id,
             URIRef('http://purl.obolibrary.org/obo/IAO_0000039'), # has measurement unit label
@@ -465,6 +519,26 @@ class ELN2Crate:
             node_id
         ))
 
+    def _model_volume(self, usage_id, volume_text):
+        if re.search(r'ml', volume_text):
+            volume_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000098') # milliliter
+        elif re.search(r'µl', volume_text):
+            volume_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000101') # microliter
+        else:
+            self.log.error('volume uses unknown unit: '+ volume_text)
+            sys.exit(1)
+
+        volume_number = re.match(r'[+-]?[,\.\d]+', volume_text.strip()).group()
+        self._add_parameter_nodes(
+            usage_id,
+            URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
+            Literal(volume_text),
+            Literal(
+                volume_number,
+                datatype=self._get_xsd_type_for_number(volume_number)
+            ),
+            volume_unit
+        )
 
     def _model_parameters(self, step_id, description):
         # TEMPERATURE
@@ -472,13 +546,14 @@ class ELN2Crate:
             temperature = temperature_search.group()
 
             if re.search(r'°\s*C', temperature):
+                temperature_number = re.match(r'[+-]?[\.\d]+', temperature.strip()).group()
                 self._add_parameter_nodes(
                     step_id,
                     URIRef('http://purl.obolibrary.org/obo/OBI_0002138'),
                     Literal(temperature),
                     Literal(
-                        re.match(r'[+-]?[\.\d]+', temperature.strip()).group(),
-                        datatype=XSD.decimal
+                        temperature_number,
+                        datatype=self._get_xsd_type_for_number(temperature_number)
                     ),
                     URIRef('http://purl.obolibrary.org/obo/UO_0000027') # degree Celsius
                 )
@@ -487,23 +562,33 @@ class ELN2Crate:
                 sys.exit(1)
 
         # FREQUENCY
-        for frequency_search in re.finditer(r'[+-]?[\.\d]+\s*Hz', description):
+        for frequency_search in re.finditer(r'[+-]?[,\.\d]+\s*(Hz|rpm|rps)', description):
             frequency = frequency_search.group()
 
+            rps = None # variable indicating recalculation
             if re.search(r'Hz', frequency):
-                self._add_parameter_nodes(
-                    step_id,
-                    URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
-                    Literal(frequency),
-                    Literal(
-                        re.match(r'[+-]?[\.\d]+', frequency.strip()).group(),
-                        datatype=XSD.decimal
-                    ),
-                    URIRef('http://purl.obolibrary.org/obo/UO_0000106') # degree Celsius
-                )
+                frequency_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000106') # hertz
+            elif re.search(r'rpm', frequency):
+                rps = True
+                frequency_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000092') # only turns per second available
+            elif re.search(r'rps', frequency):
+                rps = False
+                frequency_unit = URIRef('http://purl.obolibrary.org/obo/UO_0000092') # turns per second
             else:
                 self.log.error('frequency uses unknown unit: '+ frequency)
                 sys.exit(1)
+
+            frequency_number = re.match(r'[+-]?[,\.\d]+', frequency.strip()).group()
+            self._add_parameter_nodes(
+                step_id,
+                URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
+                Literal(frequency),
+                Literal(
+                    locale.atof(frequency_number) / 60 if rps else frequency_number,
+                    datatype=self._get_xsd_type_for_number(frequency_number)
+                ),
+                frequency_unit
+            )
 
         # DURATION
         for duration_search in re.finditer(r'[+-]?[\.\d]+\s*(min|ms)', description):
@@ -518,12 +603,13 @@ class ELN2Crate:
                 self.log.error('Duration uses unknown unit: '+ duration)
                 sys.exit(1)
 
+            duration_number = re.match(r'[+-]?[\.\d]+', duration.strip()).group()
             self._add_parameter_nodes(
                 step_id,
                 URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
                 Literal(duration),
-                Literal(re.match(r'[+-]?[\.\d]+', duration.strip()).group(), \
-                    datatype=XSD.nonNegativeInteger),
+                Literal(duration_number, \
+                        datatype=self._get_xsd_type_for_number(duration_number)),
                 duration_unit
             )
 
@@ -531,13 +617,14 @@ class ELN2Crate:
         for voltage_search in re.finditer(r'[+-]?[\.\d]+\s*V', description):
             voltage = voltage_search.group()
 
+            voltage_number = re.match(r'[+-]?[\.\d]+', voltage.strip()).group()
             if re.search(r'V', voltage):
                 self._add_parameter_nodes(
                     step_id,
                     URIRef('http://purl.obolibrary.org/obo/OBI_0001931'),
                     Literal(voltage),
-                    Literal(re.match(r'[+-]?[\.\d]+', voltage.strip()).group(), \
-                        datatype=XSD.nonNegativeInteger),
+                    Literal(voltage_number, \
+                        datatype=self._get_xsd_type_for_number(voltage_number)),
                     URIRef('http://purl.obolibrary.org/obo/UO_0000218') # V
                 )
             else:
@@ -570,7 +657,7 @@ class ELN2Crate:
             self.graph.add((
                 researcher_id,
                 URIRef('foaf:name'),
-                Literal("%s %s" % (researcher['givenName'], researcher['familyName']), \
+                Literal('%s %s' % (researcher['givenName'], researcher['familyName']), \
                     datatype=XSD.string)
             ))
             self.graph.add((
@@ -612,17 +699,28 @@ class ELN2Crate:
                     if item['ro-crate_link'] == link['href']:
                         count_links += 1
                         tmp_items.append(item)
-                        current_items.append(self.id_generator.getDBItem(item))
+                        current_items.append(('', self.id_generator.getDBItem(item)))
                         break
 
-        # check for LOT number, passage number and attributions
+        # check for LOT number, passage number, attributions and volume
         # NOTE: we assume that in a single list item there is maximum one of each:
         # * LOT number
         # * passage number
         # * attribution
-        lot_search = re.search(r'LOT \w+', element.text)
+        # * volume directly before a database link
+        # * volume before a mixture separated by ":"
+        lot_search = re.search(r'LOT \w+', element.text) #FIXME: add \s for whitespace?
         passage_search = re.search(r'Passage \d+', element.text)
         attributed_search = re.search(r'\(Attributed to .+\)', element.text)
+        # NOTE: since we are looking for a link to the database we use the HTML
+        # code instead of the text here:
+        volume_search = re.search(r'[+-]?[\.\d]+\s*(µl|ml) \<a href="Database/', str(element))
+        self.log.debug('database volume search is "%s" in element "%s"' % (volume_search, str(element)))
+        if not volume_search:
+            volume_search = re.search(r'[+-]?[\.\d]+\s*(µl|ml):', element.text)
+            self.log.debug('mixture volume search is "%s" in element "%s"' % (volume_search, element.text))
+        volume_info = re.search(r'[+-]?[\.\d]+\s*(µl|ml)', volume_search.group()).group() if volume_search else ''
+        self.log.debug('volume info is "%s" in element "%s"' % (volume_info, element.text))
 
         if attributed_search:
             # first of all, add researcher
@@ -632,7 +730,8 @@ class ELN2Crate:
 
         # we found at least one link to a database item
         if count_links == 1:
-            db_id = current_items[0]
+            # NOTE: we are not interested in volume information of the already added current item
+            _, db_id = current_items[0]
             if lot_search:
                 lot_number = lot_search.group().replace('LOT ', '')
                 if passage_search:
@@ -648,23 +747,29 @@ class ELN2Crate:
                     # now add LOT-specific infos
                     self.graph.add((
                         medium_id,
-                        URIRef('has_lot_number'), # FIXME: define custom relation
+                        URIRef('elaine:has_lot_number'), # FIXME: define custom property
                         Literal(lot_search.group(), lang='en')
                     ))
                     self.graph.add((
                         medium_id,
-                        URIRef('is_instance_of'), # FIXME: define custom relation
+                        URIRef('elaine:is_instance_of'), # FIXME: define custom property
                         db_id
                     ))
                     if passage_search:
                         self.graph.add((
                             medium_id,
-                            URIRef('has_passage_number'), # FIXME: define custom relation
+                            URIRef('elaine:has_passage_number'), # FIXME: define custom property
                             Literal(passage_search.group(), lang='en')
                         ))
 
                 # NOTE: as we use a lot/passage number, replace item with the specific id
-                current_items = [medium_id]
+                # add volume info along with current item
+                current_items = [(volume_info, medium_id)]
+            else:
+                # overwrite with volume info, if we found one
+                # NOTE: as we found only one item, this can safely be overwritten with db_id
+                current_items = [(volume_info, db_id)]
+                self.log.debug('add volume info "%s" about db_id "%s"' % (volume_info, db_id))
 
         if count_links > 1:
             # check if we have the medium description which actually is a mixture
@@ -760,7 +865,9 @@ class ELN2Crate:
                         medium_id
                     ))
 
-                    for item in current_items:
+                    # NOTE: as we assuem only one volume information, we expect this for the mixture itself
+                    # and not for the particular parts, i.e. skip this info in the current list
+                    for _, item in current_items:
                         self.graph.add((
                             medium_creating_id,
                             URIRef('http://purl.obolibrary.org/obo/OBI_0000293'), # has_specified_input #TODO: Alternative: prov:used?
@@ -780,7 +887,8 @@ class ELN2Crate:
                     ))
 
                 # NOTE: as we use the mixture instead, replace all items with the mixture id
-                current_items = [medium_id]
+                # add volume info along with current item
+                current_items = [(volume_info, medium_id)]
 
                 if attributed_search:
                     self.graph.add((medium_id, URIRef('prov:wasAttributedTo'), researcher_id))
@@ -888,7 +996,7 @@ class ELN2Crate:
                 # now, add the protocol sections as parts to the main protocol node
                 protocol_id = self.id_generator.getProtocol()
                 self.graph.add((protocol_id, RDF.type, URIRef('Action')))
-                self.graph.add((protocol_id, RDF.type, URIRef('bfo:process')))
+                self.graph.add((protocol_id, RDF.type, URIRef('http://purl.obolibrary.org/obo/BFO_0000015')))
                 self.graph.add((protocol_id, RDF.type, URIRef('prov:Activity')))
                 self.graph.add((
                     protocol_id,
@@ -897,8 +1005,8 @@ class ELN2Crate:
                 ))
                 self.graph.add((
                     protocol_id,
-                    URIRef('experiment_success'),
-                    Literal(True if self.exp['category'] == 'Success' else False, \
+                    URIRef('elaine:experiment_success'), # FIXME: define custom property
+                    Literal(True if self.exp['status'] == 'Success' else False, \
                         datatype=XSD.boolean)
                 ))
                 # TODO: add RDF.type
@@ -922,6 +1030,7 @@ class ELN2Crate:
                         ))
 
                 # now, let's model the template:
+                self.log.debug('Tags in this experiment "%s"' % (self.exp['tags']))
                 for tag in self.exp['tags'].split('|'):
                     tag_lower = tag.lower()
                     if templates.get(tag_lower):
@@ -1010,9 +1119,17 @@ class ELN2Crate:
         )
 
     def _add_used_items(self, node_id, used_items):
-        for item in used_items:
+        for (volume_info, item) in used_items:
             self.graph.add((node_id, URIRef('prov:used'), item))
+            if volume_info:
+                self._model_usage(volume_info, node_id, item)
 
+    def _model_usage(self, volume_info, activity, entity):
+        usage_id = self.id_generator.getUsage(activity, entity)
+        self._model_volume(usage_id, volume_info)
+        self.graph.add((usage_id, RDF.type, URIRef('prov:Usage')))
+        self.graph.add((usage_id, URIRef('prov:entity'), entity))
+        self.graph.add((activity, URIRef('prov:qualifiedUsage'), usage_id))
 
     def _model_general_steps(self, soup_table, id_prefix):
         for idx, row in enumerate(soup_table.find_all('tr')):
@@ -1028,12 +1145,12 @@ class ELN2Crate:
             description_wo_links = description_wo_links.text.strip()
             description_low = row.contents[1].text.strip().lower()
             self.graph.add((step_id, RDF.type, URIRef('Action')))
-            self.graph.add((step_id, RDF.type, URIRef('bfo:process')))
+            self.graph.add((step_id, RDF.type, URIRef('http://purl.obolibrary.org/obo/BFO_0000015')))
             self.graph.add((step_id, RDF.type, URIRef('prov:Activity')))
             act_found = 0
             for indicator, ontology_class in activities.items():
                 if indicator in description_low:
-                    self.graph.add((step_id, OWL.sameAs, URIRef(ontology_class)))
+                    self.graph.add((step_id, RDF.type, URIRef(ontology_class)))
                     act_found += 1
             if act_found == 0:
                 self.log.error(
@@ -1074,19 +1191,23 @@ class ELN2Crate:
 
             # if the description contains further structure, iterate over contents
             used_items = []
-            if row.contents[1].find_all(["ol", "ul"]):
+            if row.contents[1].find_all(['ol', 'ul']):
                 for element_part in row.contents[1].contents:
                     used_items += self._model_general_part(element_part)
             else:
                 used_items += self._model_general_part(row.contents[1])
 
             # now, add all the used items to this step:
-            for item_id in used_items:
+            for volume_info, item_id in used_items:
                 self.graph.add((
                     step_id,
                     URIRef('prov:used'),
                     item_id
                 ))
+                if volume_info:
+                    self._model_usage(volume_info, step_id, item_id)
+
+
 
             # however, for the linking of files, we want to search in the overall list
             for link in row.contents[1].find_all('a'):
@@ -1099,13 +1220,31 @@ class ELN2Crate:
                         step_id
                     )) # TODO: we assume that name will be represented only once
 
+                    file_prefix = re.search(r'^\d+_', parsed_name)
+                    # check if there are additional files with identical prefix
+                    if not file_prefix:
+                        self.log.warn('Could not determine file prefix from "%s"' % (parsed_name))
+                    else:
+                        for upload in self.uploads_client.read_uploads('experiments', self.exp['id']):
+                            # NOTE: we assume that file names having the same prefix are also
+                            # generated by this section even if they are not explicitly linked.
+                            # However, do not link them to a particular step
+                            if upload.real_name.startswith(file_prefix.group()):
+                                self.graph.add((
+                                    self.id_generator.getFile('Data/' + upload.real_name),
+                                    URIRef('prov:wasGeneratedBy'),
+                                    section_id
+                                ))
+
+
     def write_crate(self, target_archive):
         self.graph.serialize(
-            format="json-ld",
-            context=self.graph_context,
+            format='json-ld',
+            auto_compact=True,
             destination=os.path.join(self.tempfolder, 'ro-crate-metadata.json')
         )
         shutil.make_archive(target_archive, 'zip', self.tempfolder)
 
     def __del__(self):
-        shutil.rmtree(self.tempfolder)
+        if os.path.isdir(self.tempfolder):
+            shutil.rmtree(self.tempfolder)

@@ -92,3 +92,13 @@ class IDGenerator:
 
     def getMixturePlan(self, ingredients, number):
         return URIRef(self.protocol_namespace['mixture/%s/plan/%i' % (ingredients, number)])
+
+    def getUsage(self, activity, entity):
+        # as usage can be both of mixtures (protocol namespace) and databases
+        # check for specific namespace first:
+        if self.protocol_namespace in entity:
+            entity = entity.replace(self.protocol_namespace, '')
+        else:
+            entity = entity.replace(self.general_namespace, '')
+
+        return URIRef('%s/usage/%s' % (activity, entity))
