@@ -1,23 +1,17 @@
-# Structure-based Approach to Transfer ELN Protocols into RO-Crates
+# ELN2Crate: Structure-based Approach to Transfer ELN Protocols into RO-Crates
 
 This repository contains the source code of a structure-based approach to transfer Electronic Lab Notebook (ELN) protocols including research data into a [Research Object Crates (RO-Crates)](https://w3id.org/ro/crate/1.1) bundle whereas the semantic model rerpresents retrospective provenance about the research data.
 
 **Note that this software is a research prototype and may contain bugs and errors, i.e., do not use this in production.**
 
-The approach has been used in order to create the RO-Crates at: https://github.com/SFB-ELAINE/Ca-imaging-RO-Crate
+The approach has been used in order to create the RO-Crates at: https://github.com/m6121/Infrastructure-based-Provenance-Tracking
 
 The approach is described in full detail in this article:
-
-Max Schröder, Susanne Staehlke, Paul Groth, J. Barbara Nebe, Sascha Spors, Frank Krüger.<br>
-**Structure-based knowledge acquisition from electronic lab notebooks for research data provenance documentation.**<br>
-Journal of Biomedical Semantics 13, 4 (2022).<br>
-https://doi.org/10.1186/s13326-021-00257-x
+TBD
 
 ## License
 
-[![Creative Commons License](https://i.creativecommons.org/l/by/4.0/88x31.png)](http://creativecommons.org/licenses/by/4.0/)
-
-This work is licensed under a [Creative Commons Attribution 4.0 International License](http://creativecommons.org/licenses/by/4.0/).
+This work is licensed under the [MIT License](LICENSE).
 
 In order to reference this software, please consider the information in the [CITATION.cff](CITATION.cff) file.
 
@@ -25,12 +19,15 @@ In order to reference this software, please consider the information in the [CIT
 
 ### Software Requirements
 
+Installation of the python package is required, e.g. by installing via pip:
+
+```bash
+pip install git+https://github.com/m6121/Structure-based-ELN2LOD.git
+```
+
 Note that in order to integrate the signature-based file format output of [siegfried](https://github.com/richardlehane/siegfried), [docker](https://www.docker.com/) must be installed and must be able to be invoked by the user executing the python commands.
 
 ### Running
-
-In order to run the source code, install the python dependencies from `requirements.txt` and make sure that [Docker](https://www.docker.com/) is installed and running.
-To disable the use of siegfried, put `None` when initializing `ELN2Crate` in the parameter `SIEGFRIED_IMAGE` (see below).
 
 A minimum running example is as follows:
 
